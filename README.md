@@ -1,6 +1,4 @@
-============================================================
 SNAKE GAME - HOW TO PLAY ON ANY DEVICE
-============================================================
 
 WHAT YOU NEED
 -------------
@@ -10,9 +8,9 @@ WHAT YOU NEED
 The .com file is tiny (~1 KB) and portable to every platform.
 
 
-============================================================
+
 WINDOWS
-============================================================
+
 
 Option A: DOSBox (Recommended)
   1. Download DOSBox from https://www.dosbox.com/download.php?main=1
@@ -31,9 +29,9 @@ Option C: DOSBox-X
   Download from https://dosbox-x.com/ for more features.
 
 
-============================================================
+
 MACOS
-============================================================
+
 
 Option A: DOSBox via Homebrew
   brew install dosbox
@@ -49,9 +47,9 @@ Option C: Flatpak
   flatpak run com.dosbox_x.DOSBox-X snake.com
 
 
-============================================================
+
 LINUX (Any Distro)
-============================================================
+
 
 Debian / Ubuntu / Mint:
   sudo apt install dosbox
@@ -70,9 +68,9 @@ Flatpak (works everywhere):
   flatpak run com.dosbox.DOSBox snake.com
 
 
-============================================================
+
 IPHONE / IPAD
-============================================================
+
 
 iOS doesn't allow DOS emulators in the App Store.
 
@@ -89,9 +87,9 @@ Option C: Remote to a PC
   - Use VNC or Chrome Remote Desktop
 
 
-============================================================
+
 BROWSER (Any Device)
-============================================================
+
 
 No install needed. Use js-dos:
 
