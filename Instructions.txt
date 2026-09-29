@@ -1,0 +1,14 @@
+How we'll go about this project is:
+
+-all students will download snake game and make sure it functions in their device of choice
+-the three mods will be split within the students; 1 mod, 2 ang magtutulungan
+
+Here is ung hatian:
+    -APPLE THAT PAUSES GAME FOR 10 SECONDS:
+        -Valdulla and Fetalvero
+    
+    -APPLE THAT INCREASES APPLE SPAWN RATE:
+        -Rivera and Ventura
+
+    -APPLE THAT SLOWS DOWN SNAKE
+        -Abarico and Amador
