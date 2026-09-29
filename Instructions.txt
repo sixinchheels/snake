@@ -12,3 +12,8 @@ Here is ung hatian:
 
     -APPLE THAT SLOWS DOWN SNAKE
         -Abarico and Amador
+
+Students na po ang bahala on how they'll mod their assigned mods
+Once all students are done the project will be strung together into one project
+It is CRITICAL that students are familiar with how their mod works, and how the code works in general (in the off chance na magtanong si maam satin)
+gl
