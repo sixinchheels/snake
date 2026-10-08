@@ -8,7 +8,7 @@
 ; Controls: Arrow keys to move, ESC to quit, R to restart
 ; ============================================================
 
-bits 16                         ; 16-bit code (replaces 'org 0x100' so it assembles in object formats)
+org 0x100                       ; tell NASM this .COM program starts at offset 0x100 in its segment
 
 ; ============================================================
 ; START - program entry point
@@ -594,24 +594,33 @@ pause_10:
     mov ah, 0x09
     int 0x21
 
-    mov ah, 0x00                ; read the clock
+.flush1:                        ; throw away keys pressed before the pause
+    mov ah, 0x01
+    int 0x16
+    jz .flushed1
+    mov ah, 0x00
+    int 0x16
+    jmp .flush1
+.flushed1:
+
+    mov ah, 0x00                ; timer starts HERE, after eating + drawing
     int 0x1A
     mov bx, dx                  ; BX = start tick
 .wait:
     mov ah, 0x00
     int 0x1A
     sub dx, bx                  ; elapsed ticks (safe even if the counter wraps)
-    cmp dx, 73                  ; 73 ticks = roughly 4 seconds i think 
+    cmp dx, 73                  ; 73 ticks = roughly 4 seconds
     jb .wait
 
-.flush:                         ; throw away keys pressed during the pause
+.flush2:                        ; throw away keys pressed during the pause
     mov ah, 0x01
     int 0x16
-    jz .flushed
+    jz .flushed2
     mov ah, 0x00
     int 0x16
-    jmp .flush
-.flushed:
+    jmp .flush2
+.flushed2:
     call draw_border            ; repaint the top border to wipe the message
     ret
 
