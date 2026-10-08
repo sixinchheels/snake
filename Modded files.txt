@@ -1,0 +1,799 @@
+; FREEZE APPLE ADDED
+; RATE APPLE ADDED (yellow '+': eating it makes freeze apples spawn more often)
+
+; ============================================================
+; SNAKE GAME - x86 Assembly (NASM)
+; Assemble: nasm -f bin snake.asm -o snake.com
+; Run in DOSBox: dosbox snake.com
+; Controls: Arrow keys to move, ESC to quit, R to restart
+; ============================================================
+
+bits 16                         ; 16-bit code (replaces 'org 0x100' so it assembles in object formats)
+
+; ============================================================
+; START - program entry point
+; ============================================================
+start:
+    ; Set video mode 3 (80x25 color text)
+    mov ax, 0x0003              ; AH=0x00 (set video mode), AL=0x03 (mode 3: 80x25 text)
+    int 0x10                    ; fire BIOS video interrupt to switch the mode
+
+    ; Hide cursor
+    mov ah, 0x01                ; AH=0x01 (set cursor shape function)
+    mov cx, 0x2607              ; CH=0x26 (start scanline), CL=0x07 (end scanline)
+                                ; start > end = invalid range = cursor hidden
+    int 0x10                    ; fire BIOS video interrupt to apply cursor shape
+
+    call init_game              ; set up initial game state and draw first frame
+
+; ============================================================
+; MAIN LOOP - runs once per frame (~9 times per second)
+; ============================================================
+main_loop:
+    ; Non-blocking keyboard check
+
+    mov ah, 0x01                ; AH=0x01 (peek keyboard buffer function)
+    int 0x16                    ; fire BIOS keyboard interrupt; ZF=1 if no key waiting
+    jz no_key                   ; if no key was pressed, jump to no_key
+    mov ah, 0x00                ; AH=0x00 (read key from buffer)
+    int 0x16                    ; fire BIOS keyboard interrupt; returns scan/ASCII in AH/AL
+    call handle_key             ; update direction based on the key that was read
+
+no_key:
+    call delay                  ; pause ~110ms so the snake doesn't zoom
+    call move_snake             ; advance the snake one cell; check wall collisions
+    call check_collision        ; did the head land on a body segment?
+    cmp byte [game_over], 1     ; is the game over flag set?
+    je end_game                 ; if yes, jump out of the loop to the game-over screen
+
+    ;FREEZE APPLE MOD
+    call check_apple            ; check for freeze apple
+    call update_apple           ; maybe spawn it, or let it expire
+
+    ;RATE APPLE MOD
+    call check_rate_apple       ; check for rate apple
+    call update_rate_apple      ; maybe spawn it
+
+    call check_food             ; did the head land on food? (grow, score, respawn)
+    call draw_screen            ; draw the head, body, food, and score
+    jmp main_loop               ; loop back to the top and do it all again
+
+; ============================================================
+; GAME OVER SCREEN
+; ============================================================
+end_game:
+    mov ah, 0x01                ; AH=0x01 (set cursor shape)
+    mov cx, 0x0607              ; valid shape: scanlines 6 to 7 (normal underline)
+    int 0x10                    ; show the cursor again
+
+    ; Clear center of screen
+    mov dh, 11                  ; DH = row 11
+    mov dl, 25                  ; DL = column 25
+    call set_cursor             ; move cursor there
+    mov dx, msg_blank           ; DX = address of blank string
+    mov ah, 0x09                ; AH=0x09 (DOS print string function)
+    int 0x21                    ; print blank to clear that line
+
+    mov dh, 12                  ; DH = row 12
+    mov dl, 27                  ; DL = column 27
+    call set_cursor             ; move cursor there
+    mov dx, msg_over            ; DX = "GAME OVER!" string
+    mov ah, 0x09                ; DOS print string
+    int 0x21                    ; print it
+
+    mov dh, 13                  ; DH = row 13
+    mov dl, 25                  ; DL = column 25
+    call set_cursor             ; move cursor
+    mov dx, msg_final_score     ; DX = "FINAL SCORE: " string
+    mov ah, 0x09                ; DOS print string
+    int 0x21                    ; print it
+
+    mov ax, [score]             ; AX = current score value
+    call print_num              ; print the number in AX as decimal digits
+
+    mov dh, 15                  ; DH = row 15
+    mov dl, 22                  ; DL = column 22
+    call set_cursor             ; move cursor
+    mov dx, msg_restart         ; DX = "Press R to restart..." string
+    mov ah, 0x09                ; DOS print string
+    int 0x21                    ; print it
+
+    ; Wait for key
+    mov ah, 0x00                ; AH=0x00 (blocking read key from buffer)
+    int 0x16                    ; wait until player presses a key; result in AL
+
+    ; Check for 'R' or 'r'
+    cmp al, 'r'                 ; was it lowercase r?
+    je restart_game             ; if yes, restart
+    cmp al, 'R'                 ; was it uppercase R?
+    je restart_game             ; if yes, restart
+
+    ; Any other key: quit
+    mov ax, 0x0003              ; switch back to normal 80x25 text mode
+    int 0x10                    ; (this clears the screen)
+    mov ax, 0x4C00              ; AH=0x4C (DOS exit), AL=0x00 (return code)
+    int 0x21                    ; exit to DOS
+
+; ============================================================
+; RESTART GAME
+; ============================================================
+restart_game:
+    ; Clear screen by resetting video mode
+    mov ax, 0x0003              ; back to 80x25 text mode (clears screen)
+    int 0x10                    ; apply it
+    mov ah, 0x01                ; set cursor shape
+    mov cx, 0x2607              ; hide cursor again
+    int 0x10                    ; apply it
+
+    ; Reset game state and redraw
+    call init_game              ; reset all variables and redraw
+    jmp main_loop               ; jump back into the main loop
+
+; ============================================================
+; INITIALIZE GAME
+; ============================================================
+init_game:
+    mov ah, 0x00                ; AH=0x00 (read system clock tick count function)
+    int 0x1A                    ; returns low 16 bits of ticks in DX
+    mov [seed], dx              ; store as random seed for LCG
+
+    mov byte [snake_len], 3     ; snake starts as 3 cells (head + 2 body)
+    mov byte [direction], 2     ; 2 = right (0=up, 1=down, 2=right, 3=left)
+
+    mov byte [snake_x], 40      ; head column = 40 (center of 80-wide screen)
+    mov byte [snake_y], 12      ; head row = 12 (center of 25-tall screen)
+
+    mov byte [snake_bx+0], 39   ; body segment 0 column = 39 (one left of head)
+    mov byte [snake_by+0], 12   ; body segment 0 row = 12 (same row as head)
+    mov byte [snake_bx+1], 38   ; body segment 1 column = 38 (two left of head)
+    mov byte [snake_by+1], 12   ; body segment 1 row = 12
+
+    mov byte [game_over], 0     ; 0 = alive, 1 = dead
+    mov byte [freeze_apple_on], 0      ; no apple at game start
+    mov byte [rate_apple_on], 0        ; no rate apple at game start
+    mov byte [spawn_mask], 0x1F        ; reset apple spawn rate to normal
+    mov word [score], 0         ; reset score to 0 (16-bit store)
+
+    call spawn_food             ; place first food pellet at random position
+    call draw_border            ; draw the box border (only once)
+    call draw_screen            ; draw the initial snake + food + score
+    ret                         ; return to caller
+
+; ============================================================
+; KEY HANDLING
+; ============================================================
+handle_key:
+    cmp al, 27                  ; AL = ASCII code; 27 = ESC key
+    je .quit                    ; if ESC pressed, quit
+    cmp ah, 0x48                ; AH = scan code; 0x48 = Up arrow
+    je .up                      ; if Up pressed, go to up handler
+    cmp ah, 0x50                ; 0x50 = Down arrow
+    je .down                    ; handle down
+    cmp ah, 0x4B                ; 0x4B = Left arrow
+    je .left                    ; handle left
+    cmp ah, 0x4D                ; 0x4D = Right arrow
+    je .right                   ; handle right
+    ret                         ; unknown key; return without changing anything
+
+.up:
+    cmp byte [direction], 1     ; is the snake currently moving down?
+    je .done                    ; if yes, refuse: can't reverse 180 degrees
+    mov byte [direction], 0     ; otherwise set direction = 0 (up)
+    ret
+
+.down:
+    cmp byte [direction], 0     ; is the snake currently moving up?
+    je .done                    ; if yes, refuse
+    mov byte [direction], 1     ; otherwise set direction = 1 (down)
+    ret
+
+.left:
+    cmp byte [direction], 2     ; is the snake currently moving right?
+    je .done                    ; if yes, refuse
+    mov byte [direction], 3     ; otherwise set direction = 3 (left)
+    ret
+
+.right:
+    cmp byte [direction], 3     ; is the snake currently moving left?
+    je .done                    ; if yes, refuse
+    mov byte [direction], 2     ; otherwise set direction = 2 (right)
+
+.done:
+    ret                         ; shared return for all handlers
+
+.quit:
+    mov byte [game_over], 1     ; set game over flag so main loop exits
+    ret
+
+; ============================================================
+; MOVE SNAKE
+; ============================================================
+move_snake:
+    ; Erase current tail (at body[snake_len - 1])
+    mov cl, [snake_len]         ; CL = current snake length (e.g. 3)
+    dec cl                      ; CL = snake_len - 1 (tail index)
+    mov ch, 0                   ; CH = 0, so CX is a clean index
+    mov si, cx                  ; SI = tail index
+    mov dh, [snake_by + si]     ; DH = tail's y-coordinate (row)
+    mov dl, [snake_bx + si]     ; DL = tail's x-coordinate (column)
+    call set_cursor             ; move BIOS cursor to tail position
+    mov al, ' '                 ; AL = space character
+    mov bl, 0x07                ; BL = color (light gray on black)
+    call put_char               ; write space to erase the tail from screen
+
+    ; Shift body: from tail down to index 1
+    mov cl, [snake_len]         ; CL = snake length
+    dec cl                      ; CL = snake_len - 1 (last index)
+    mov ch, 0                   ; clean CX
+    cmp cx, 0                   ; is CX zero? (snake has no body)
+    je .no_shift                ; if yes, skip shift loop
+
+    mov si, cx                  ; SI = starting index (tail)
+
+.shift_loop:
+    mov al, [snake_bx + si - 1] ; AL = x-coordinate of segment in front of SI
+    mov [snake_bx + si], al     ; store it at SI's slot (segment moves forward)
+    mov al, [snake_by + si - 1] ; AL = y-coordinate of segment in front
+    mov [snake_by + si], al     ; store at SI's slot
+    dec si                      ; move to previous segment
+    jnz .shift_loop             ; loop until SI reaches 0
+
+.no_shift:
+    ; Old head becomes body[0]
+    mov al, [snake_x]           ; AL = head's x-coordinate (old position)
+    mov [snake_bx + 0], al      ; store as body segment 0's x
+    mov al, [snake_y]           ; AL = head's y-coordinate
+    mov [snake_by + 0], al      ; store as body segment 0's y
+
+    ; Move head
+    cmp byte [direction], 0     ; is direction 0 (up)?
+    je .up                      ; if yes, go to up handler
+    cmp byte [direction], 1     ; is direction 1 (down)?
+    je .down                    ; handle down
+    cmp byte [direction], 2     ; is direction 2 (right)?
+    je .right                   ; handle right
+    dec byte [snake_x]          ; otherwise (direction 3, left) move column left
+    jmp .check_walls            ; skip over other handlers
+
+.up:
+    dec byte [snake_y]          ; moving up = row goes down by 1
+    jmp .check_walls            ; skip over other handlers
+.down:
+    inc byte [snake_y]          ; moving down = row goes up by 1
+    jmp .check_walls            ; skip over other handlers
+.right:
+    inc byte [snake_x]          ; moving right = column goes up by 1
+                                ; (falls through to .check_walls)
+
+.check_walls:
+    ; Playfield: x = 1..78, y = 1..23
+    cmp byte [snake_x], 1       ; is head past the left border?
+    jl .dead                    ; if x < 1, dead
+    cmp byte [snake_x], 78      ; is head past the right border?
+    jg .dead                    ; if x > 78, dead
+    cmp byte [snake_y], 1       ; is head past the top border?
+    jl .dead                    ; if y < 1, dead
+    cmp byte [snake_y], 23      ; is head past the bottom border?
+    jg .dead                    ; if y > 23, dead
+    ret                         ; head is inside; return normally
+
+.dead:
+    mov byte [game_over], 1     ; set game over flag
+    ret                         ; return to caller
+
+; ============================================================
+; CHECK COLLISION WITH SELF
+; ============================================================
+check_collision:
+    mov cl, [snake_len]         ; CL = snake length
+    dec cl                      ; CL = snake_len - 1 = number of body segments
+    mov ch, 0                   ; clean CX
+    cmp cx, 0                   ; any body segments?
+    je .done                    ; if none, nothing to check
+    mov si, 0                   ; start at body index 0
+
+.loop:
+    mov al, [snake_bx + si]     ; AL = segment's x-coordinate
+    cmp al, [snake_x]           ; compare with head's x
+    jne .next                   ; if different, this segment isn't a collision
+    mov al, [snake_by + si]     ; AL = segment's y-coordinate
+    cmp al, [snake_y]           ; compare with head's y
+    jne .next                   ; if different, not a collision
+    mov byte [game_over], 1     ; both matched: snake bit itself, game over
+    ret                         ; return immediately
+
+.next:
+    inc si                      ; move to next body segment
+    loop .loop                  ; decrement CX; loop while CX != 0
+
+.done:
+    ret                         ; no collision found; return
+
+; ============================================================
+; CHECK FOOD
+; ============================================================
+check_food:
+    mov al, [snake_x]           ; AL = head's x-coordinate
+    cmp al, [food_x]            ; compare with food's x
+    jne .done                   ; if different, no food eaten
+    mov al, [snake_y]           ; AL = head's y-coordinate
+    cmp al, [food_y]            ; compare with food's y
+    jne .done                   ; if different, no food eaten
+
+    inc byte [snake_len]        ; grow snake by 1 segment
+    add word [score], 10        ; add 10 points to score
+    call spawn_food             ; place a new food pellet
+
+.done:
+    ret                         ; return
+
+; ============================================================
+; SPAWN FOOD
+; ============================================================
+spawn_food:
+.retry:
+    call rand                   ; get a pseudo-random 16-bit value in AX
+    xor dx, dx                  ; clear DX so DX:AX is the dividend
+    mov bx, 76                  ; divisor = 76 (columns 1..76)
+    div bx                      ; AX = quotient, DX = remainder (0..75)
+    add dx, 1                   ; shift remainder to 1..76
+    mov [food_x], dl            ; store as food column
+
+    call rand                   ; get another random value
+    xor dx, dx                  ; clear DX
+    mov bx, 21                  ; divisor = 21 (rows 1..21)
+    div bx                      ; DX = remainder (0..20)
+    add dx, 1                   ; shift to 1..21
+    mov [food_y], dl            ; store as food row
+
+    mov cl, [snake_len]         ; CL = snake length
+    mov ch, 0                   ; clean CX
+    cmp cx, 0                   ; any body segments to check against?
+    je .ok                      ; if none, accept position
+    mov si, 0                   ; start at segment 0
+
+.chk:
+    mov al, [snake_bx + si]     ; AL = segment's x
+    cmp al, [food_x]            ; does it match the food's x?
+    jne .next                   ; if not, next segment
+    mov al, [snake_by + si]     ; AL = segment's y
+    cmp al, [food_y]            ; does it match the food's y?
+    jne .next                   ; if not, next segment
+    jmp .retry                  ; both matched: food landed on snake; try again
+
+.next:
+    inc si                      ; next body segment
+    loop .chk                   ; loop until all segments checked
+
+    ; CHECK IF AN APPLE MAY OVERLAP WITH FREEZE APPLE
+    cmp byte [freeze_apple_on], 1      ; don't land on the blue apple
+    jne .ok
+    mov al, [freeze_apple_x]
+    cmp al, [food_x]
+    jne .ok
+    mov al, [freeze_apple_y]
+    cmp al, [food_y]
+    je .retry
+
+.ok:
+    ret                         ; accept the position
+
+; ============================================================
+; RANDOM (LCG)
+; ============================================================
+rand:
+    mov ax, [seed]              ; AX = current seed
+    mov bx, 25173               ; multiplier constant
+    mul bx                      ; DX:AX = AX * BX (result is 32-bit)
+    add ax, 13849               ; add increment to low word
+    mov [seed], ax              ; save new seed
+    ret                         ; return (caller uses AX as the random value)
+
+; ============================================================
+; DRAW SCREEN
+; ============================================================
+draw_screen:
+    ; Head (bright green 'O')
+    mov dh, [snake_y]           ; DH = head's row
+    mov dl, [snake_x]           ; DL = head's column
+    call set_cursor             ; position cursor at head
+    mov al, 'O'                 ; AL = 'O' character
+    mov bl, 0x0A                ; BL = bright green
+    call put_char               ; draw the head
+
+    ; Body (dark green 'o')
+    mov cl, [snake_len]         ; CL = snake length
+    dec cl                      ; CL = number of body segments
+    mov ch, 0                   ; clean CX
+    mov si, 0                   ; start at segment 0
+
+.body:
+    cmp si, cx                  ; have we drawn all segments?
+    jge .body_done              ; if yes, exit loop
+    mov dh, [snake_by + si]     ; DH = this segment's row
+    mov dl, [snake_bx + si]     ; DL = this segment's column
+    call set_cursor             ; position cursor
+    mov al, 'o'                 ; AL = 'o' character
+    mov bl, 0x02                ; BL = dark green
+    call put_char               ; draw the segment
+    inc si                      ; next segment
+    jmp .body                   ; loop
+
+.body_done:
+    ; Food (bright red '*')
+    mov dh, [food_y]            ; DH = food's row
+    mov dl, [food_x]            ; DL = food's column
+    call set_cursor             ; position cursor
+    mov al, '*'                 ; AL = '*' character
+    mov bl, 0x0C                ; BL = bright red
+    call put_char               ; draw the food
+
+    ; Freeze Apple
+    cmp byte [freeze_apple_on], 1
+    jne .no_apple
+    mov dh, [freeze_apple_y]
+    mov dl, [freeze_apple_x]
+    call set_cursor
+    mov al, '@'
+    mov bl, 0x09                ; bright blue
+    call put_char
+
+.no_apple:
+
+    ; Rate Apple (yellow '+')
+    cmp byte [rate_apple_on], 1
+    jne .no_rate_apple
+    mov dh, [rate_apple_y]
+    mov dl, [rate_apple_x]
+    call set_cursor
+    mov al, '+'
+    mov bl, 0x0E                ; bright yellow
+    call put_char
+
+.no_rate_apple:
+
+    ; Score at top of border
+    mov dh, 0                   ; DH = row 0 (top of screen)
+    mov dl, 2                   ; DL = column 2
+    call set_cursor             ; position cursor
+    mov dx, msg_score           ; DX = address of "SCORE: " string
+    mov ah, 0x09                ; DOS print string function
+    int 0x21                    ; print it
+
+    mov ax, [score]             ; AX = current score
+    call print_num              ; print the number as decimal
+
+    ret                         ; return
+
+; ============================================================
+; DRAW BORDER (called once)
+; ============================================================
+draw_border:
+    mov al, 0xCD                ; AL = ═ (double horizontal line)
+    mov bl, 0x08                ; BL = dark gray color
+
+    mov dh, 0                   ; top row = 0
+    mov dl, 0                   ; start column = 0
+    mov cx, 80                  ; 80 characters across
+
+.top:
+    call set_cursor             ; position cursor
+    call put_char               ; draw the character
+    inc dl                      ; next column
+    loop .top                   ; loop 80 times
+
+    mov dh, 24                  ; bottom row = 24
+    mov dl, 0                   ; start column = 0
+    mov cx, 80                  ; 80 characters across
+.bot:
+    call set_cursor
+    call put_char
+    inc dl
+    loop .bot
+
+    mov al, 0xBA                ; AL = ║ (double vertical line)
+    mov ch, 1                   ; CH = starting row (1)
+
+.side:
+    mov dh, ch                  ; DH = current row
+    mov dl, 0                   ; DL = left column
+    call set_cursor
+    call put_char               ; draw left side character
+    mov dh, ch                  ; DH = same row
+    mov dl, 79                  ; DL = right column
+    call set_cursor
+    call put_char               ; draw right side character
+    inc ch                      ; next row
+    cmp ch, 24                  ; reached bottom yet?
+    jl .side                    ; loop while row < 24
+    ret
+
+; ============================================================
+; GOLDEN APPLE
+; ============================================================
+update_apple:
+    cmp byte [freeze_apple_on], 1      ; is an apple already on screen?
+    je .out                     
+    call rand
+    test [spawn_mask], ah       ; spawn rate (mask shrinks when a rate apple is eaten)
+    jnz .out
+    call spawn_apple
+.out:
+    ret
+
+spawn_apple:
+.retry:
+    call rand
+    xor dx, dx
+    mov bx, 76
+    div bx
+    add dx, 1
+    mov [freeze_apple_x], dl
+    call rand
+    xor dx, dx
+    mov bx, 21
+    div bx
+    add dx, 1
+    mov [freeze_apple_y], dl
+
+    mov al, [freeze_apple_x]           ; don't land on the normal food
+    cmp al, [food_x]
+    jne .head
+    mov al, [freeze_apple_y]
+    cmp al, [food_y]
+    je .retry
+.head:
+    mov al, [freeze_apple_x]           ; don't land on the head
+    cmp al, [snake_x]
+    jne .body
+    mov al, [freeze_apple_y]
+    cmp al, [snake_y]
+    je .retry
+.body:
+    mov cl, [snake_len]         ; don't land on the body
+    dec cl
+    mov ch, 0
+    cmp cx, 0
+    je .ok
+    mov si, 0
+.chk:
+    mov al, [snake_bx + si]
+    cmp al, [freeze_apple_x]
+    jne .next
+    mov al, [snake_by + si]
+    cmp al, [freeze_apple_y]
+    je .retry
+.next:
+    inc si
+    loop .chk
+.ok:
+    mov byte [freeze_apple_on], 1
+    ret
+
+check_apple:
+    cmp byte [freeze_apple_on], 1
+    jne .done
+    mov al, [snake_x]
+    cmp al, [freeze_apple_x]
+    jne .done
+    mov al, [snake_y]
+    cmp al, [freeze_apple_y]
+    jne .done
+    mov byte [freeze_apple_on], 0      ; eaten
+    add word [score], 5         ; small bonus (remove if you don't want it)
+    call pause_10
+.done:
+    ret
+
+pause_10:
+    call draw_screen            ; show the snake at its new spot first
+    mov dh, 0                   ; show message on the top border
+    mov dl, 33
+    call set_cursor
+    mov dx, msg_pause
+    mov ah, 0x09
+    int 0x21
+
+    mov ah, 0x00                ; read the clock
+    int 0x1A
+    mov bx, dx                  ; BX = start tick
+.wait:
+    mov ah, 0x00
+    int 0x1A
+    sub dx, bx                  ; elapsed ticks (safe even if the counter wraps)
+    cmp dx, 73                  ; 73 ticks = roughly 4 seconds i think 
+    jb .wait
+
+.flush:                         ; throw away keys pressed during the pause
+    mov ah, 0x01
+    int 0x16
+    jz .flushed
+    mov ah, 0x00
+    int 0x16
+    jmp .flush
+.flushed:
+    call draw_border            ; repaint the top border to wipe the message
+    ret
+
+; ============================================================
+; RATE APPLE - eating it makes freeze apples spawn more often
+; spawn_mask: 0x1F (normal) -> 0x0F -> 0x07 -> 0x03 -> 0x01 (max rate)
+; ============================================================
+update_rate_apple:
+    cmp byte [rate_apple_on], 1        ; is a rate apple already on screen?
+    je .out
+    call rand
+    test ah, 0x3F               ; rate apple spawn chance (rarer than freeze apple)
+    jnz .out
+    call spawn_rate_apple
+.out:
+    ret
+
+spawn_rate_apple:
+.retry:
+    call rand
+    xor dx, dx
+    mov bx, 76
+    div bx
+    add dx, 1
+    mov [rate_apple_x], dl
+    call rand
+    xor dx, dx
+    mov bx, 21
+    div bx
+    add dx, 1
+    mov [rate_apple_y], dl
+
+    mov al, [rate_apple_x]             ; don't land on the normal food
+    cmp al, [food_x]
+    jne .frz
+    mov al, [rate_apple_y]
+    cmp al, [food_y]
+    je .retry
+.frz:
+    cmp byte [freeze_apple_on], 1      ; don't land on the freeze apple
+    jne .head
+    mov al, [rate_apple_x]
+    cmp al, [freeze_apple_x]
+    jne .head
+    mov al, [rate_apple_y]
+    cmp al, [freeze_apple_y]
+    je .retry
+.head:
+    mov al, [rate_apple_x]             ; don't land on the head
+    cmp al, [snake_x]
+    jne .body
+    mov al, [rate_apple_y]
+    cmp al, [snake_y]
+    je .retry
+.body:
+    mov cl, [snake_len]         ; don't land on the body
+    dec cl
+    mov ch, 0
+    cmp cx, 0
+    je .ok
+    mov si, 0
+.chk:
+    mov al, [snake_bx + si]
+    cmp al, [rate_apple_x]
+    jne .next
+    mov al, [snake_by + si]
+    cmp al, [rate_apple_y]
+    je .retry
+.next:
+    inc si
+    loop .chk
+.ok:
+    mov byte [rate_apple_on], 1
+    ret
+
+check_rate_apple:
+    cmp byte [rate_apple_on], 1
+    jne .done
+    mov al, [snake_x]
+    cmp al, [rate_apple_x]
+    jne .done
+    mov al, [snake_y]
+    cmp al, [rate_apple_y]
+    jne .done
+    mov byte [rate_apple_on], 0        ; eaten
+    add word [score], 5                ; small bonus
+    cmp byte [spawn_mask], 1           ; already at max spawn rate?
+    jbe .done
+    shr byte [spawn_mask], 1           ; halve the mask = double the spawn chance
+.done:
+    ret
+
+; ============================================================
+; HELPERS
+; ============================================================
+set_cursor:
+    mov ah, 0x02                ; AH=0x02 (set cursor position function)
+    mov bh, 0                   ; BH=0 (video page 0)
+    int 0x10                    ; BIOS moves cursor to (DH, DL)
+    ret                         ; caller sets DH (row) and DL (column) first
+
+put_char:
+    push ax                     ; save AX (contains character in AL)
+    push bx                     ; save BX (contains color in BL)
+    push cx                     ; save CX (used by BIOS as repeat count)
+    mov ah, 0x09                ; AH=0x09 (write char + attribute function)
+    mov bh, 0                   ; BH=0 (video page 0)
+    mov cx, 1                   ; write the character exactly once
+    int 0x10                    ; BIOS draws character at current cursor
+    pop cx                      ; restore CX
+    pop bx                      ; restore BX
+    pop ax                      ; restore AX
+    ret
+
+print_num:
+    push ax                     ; save number being printed
+    push bx                     ; save BX
+    push cx                     ; save CX
+    push dx                     ; save DX
+    mov cx, 0                   ; CX = digit counter
+    mov bx, 10                  ; divisor = 10
+.digit:
+    xor dx, dx                  ; clear DX for the division
+    div bx                      ; AX / 10 -> AX = quotient, DX = digit
+    push dx                     ; save digit on stack
+    inc cx                      ; count one more digit
+    test ax, ax                 ; is the quotient zero?
+    jnz .digit                  ; if not, loop for another digit
+.print:
+    pop dx                      ; get a digit off the stack
+    add dl, '0'                 ; convert to ASCII
+    mov ah, 0x02                ; AH=0x02 (DOS print character function)
+    int 0x21                    ; print the digit
+    loop .print                 ; loop for all digits
+    pop dx                      ; restore DX
+    pop cx                      ; restore CX
+    pop bx                      ; restore BX
+    pop ax                      ; restore AX
+    ret
+
+delay:
+    mov ah, 0x00                ; AH=0x00 (read system clock tick count)
+    int 0x1A                    ; returns tick count in DX
+    mov bx, dx                  ; BX = start tick
+    add bx, 2                   ; target tick = start + 2 (~110 ms)
+.wait:
+    mov ah, 0x00                ; read tick count again
+    int 0x1A                    ; DX = current tick
+    cmp dx, bx                  ; reached the target yet?
+    jl .wait                    ; if not, keep waiting
+    ret                         ; return
+
+; ============================================================
+; DATA
+; ============================================================
+snake_x     db 40               ; head column
+snake_y     db 12               ; head row
+snake_len   db 3                ; snake length (head + body segments)
+direction   db 2                ; 0=up, 1=down, 2=right, 3=left
+food_x      db 20               ; food column
+food_y      db 10               ; food row
+game_over   db 0                ; 0=alive, 1=dead
+seed        dw 0                ; RNG state
+score       dw 0                ; player's score
+
+snake_bx    times 256 db 0      ; body segment x-coordinates
+snake_by    times 256 db 0      ; body segment y-coordinates
+
+msg_pause       db ' PAUSED 4s! $'
+msg_score       db 'SCORE: $'                              ; score label
+msg_over        db 'GAME OVER!$'                           ; game over text
+msg_final_score db 'FINAL SCORE: $'                        ; final score label
+msg_restart     db 'Press R to restart, any other key to quit$'  ; restart prompt
+msg_blank       db '                                        $'  ; blank line for clearing
+
+; FREEZE APPLE DATA
+freeze_apple_x     db 0               
+freeze_apple_y     db 0               
+freeze_apple_on    db 0                ; 1 = apple is on screen
+
+; RATE APPLE DATA
+rate_apple_x       db 0
+rate_apple_y       db 0
+rate_apple_on      db 0                ; 1 = rate apple is on screen
+spawn_mask         db 0x1F             ; freeze apple spawn mask (smaller = more frequent)
