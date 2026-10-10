@@ -1,5 +1,6 @@
 ; FREEZE APPLE ADDED
 ; RATE APPLE ADDED (yellow '+': eating it makes freeze apples spawn more often)
+; Slow Apple Added
 
 ; ============================================================
 ; SNAKE GAME - x86 Assembly (NASM)
@@ -53,6 +54,10 @@ no_key:
     ;RATE APPLE MOD
     call check_rate_apple       ; check for rate apple
     call update_rate_apple      ; maybe spawn it
+
+    ; SLOW APPLE MOD (separate from normal food and other special apples)
+    call check_slow_apple
+    call update_slow_apple
 
     call check_food             ; did the head land on food? (grow, score, respawn)
     call draw_screen            ; draw the head, body, food, and score
@@ -151,6 +156,8 @@ init_game:
     mov byte [game_over], 0     ; 0 = alive, 1 = dead
     mov byte [freeze_apple_on], 0      ; no apple at game start
     mov byte [rate_apple_on], 0        ; no rate apple at game start
+    mov byte [slow_apple_on], 0        ; no slow apple at game start
+    mov word [move_delay], 2           ; normal movement speed at game start
     mov byte [spawn_mask], 0x1F        ; reset apple spawn rate to normal
     mov word [score], 0         ; reset score to 0 (16-bit store)
 
@@ -452,6 +459,18 @@ draw_screen:
 
 .no_rate_apple:
 
+    ; Slow Apple (purple 'S')
+    cmp byte [slow_apple_on], 1
+    jne .no_slow_apple
+    mov dh, [slow_apple_y]
+    mov dl, [slow_apple_x]
+    call set_cursor
+    mov al, 'S'
+    mov bl, 0x0D                ; bright magenta
+    call put_char
+
+.no_slow_apple:
+
     ; Score at top of border
     mov dh, 0                   ; DH = row 0 (top of screen)
     mov dl, 2                   ; DL = column 2
@@ -714,6 +733,111 @@ check_rate_apple:
     ret
 
 ; ============================================================
+; SLOW APPLE - eating this special apple slows movement
+; It adds 2 BIOS timer ticks to the movement delay for the rest of the round.
+; Normal red food and the existing special apples are unchanged.
+; ============================================================
+update_slow_apple:
+    cmp byte [slow_apple_on], 1
+    je .out
+    call rand
+    test ah, 0x7F               ; uncommon spawn chance
+    jnz .out
+    call spawn_slow_apple
+.out:
+    ret
+
+spawn_slow_apple:
+.retry:
+    call rand
+    xor dx, dx
+    mov bx, 76
+    div bx
+    add dx, 1
+    mov [slow_apple_x], dl
+
+    call rand
+    xor dx, dx
+    mov bx, 21
+    div bx
+    add dx, 1
+    mov [slow_apple_y], dl
+
+    ; Avoid the normal red food
+    mov al, [slow_apple_x]
+    cmp al, [food_x]
+    jne .check_freeze
+    mov al, [slow_apple_y]
+    cmp al, [food_y]
+    je .retry
+
+.check_freeze:
+    ; Avoid the blue Freeze Apple
+    cmp byte [freeze_apple_on], 1
+    jne .check_rate
+    mov al, [slow_apple_x]
+    cmp al, [freeze_apple_x]
+    jne .check_rate
+    mov al, [slow_apple_y]
+    cmp al, [freeze_apple_y]
+    je .retry
+
+.check_rate:
+    ; Avoid the yellow Rate Apple
+    cmp byte [rate_apple_on], 1
+    jne .check_head
+    mov al, [slow_apple_x]
+    cmp al, [rate_apple_x]
+    jne .check_head
+    mov al, [slow_apple_y]
+    cmp al, [rate_apple_y]
+    je .retry
+
+.check_head:
+    mov al, [slow_apple_x]
+    cmp al, [snake_x]
+    jne .check_body
+    mov al, [slow_apple_y]
+    cmp al, [snake_y]
+    je .retry
+
+.check_body:
+    mov cl, [snake_len]
+    dec cl
+    mov ch, 0
+    cmp cx, 0
+    je .ok
+    mov si, 0
+.body_loop:
+    mov al, [snake_bx + si]
+    cmp al, [slow_apple_x]
+    jne .body_next
+    mov al, [snake_by + si]
+    cmp al, [slow_apple_y]
+    je .retry
+.body_next:
+    inc si
+    loop .body_loop
+.ok:
+    mov byte [slow_apple_on], 1
+    ret
+
+check_slow_apple:
+    cmp byte [slow_apple_on], 1
+    jne .done
+    mov al, [snake_x]
+    cmp al, [slow_apple_x]
+    jne .done
+    mov al, [snake_y]
+    cmp al, [slow_apple_y]
+    jne .done
+
+    mov byte [slow_apple_on], 0
+    add word [move_delay], 2    ; slow down only after eating the special S apple
+.done:
+    ret
+
+; ============================================================
 ; HELPERS
 ; ============================================================
 set_cursor:
@@ -762,16 +886,16 @@ print_num:
     ret
 
 delay:
-    mov ah, 0x00                ; AH=0x00 (read system clock tick count)
-    int 0x1A                    ; returns tick count in DX
-    mov bx, dx                  ; BX = start tick
-    add bx, 2                   ; target tick = start + 2 (~110 ms)
+    mov ah, 0x00                ; read system clock tick count
+    int 0x1A                    ; DX = starting tick count
+    mov bx, dx                  ; save starting tick count in BX
 .wait:
-    mov ah, 0x00                ; read tick count again
-    int 0x1A                    ; DX = current tick
-    cmp dx, bx                  ; reached the target yet?
-    jl .wait                    ; if not, keep waiting
-    ret                         ; return
+    mov ah, 0x00
+    int 0x1A                    ; DX = current tick count
+    sub dx, bx                  ; elapsed ticks (handles counter wrap)
+    cmp dx, [move_delay]        ; default 2 ticks; slow apple increases this
+    jb .wait
+    ret
 
 ; ============================================================
 ; DATA
@@ -785,6 +909,7 @@ food_y      db 10               ; food row
 game_over   db 0                ; 0=alive, 1=dead
 seed        dw 0                ; RNG state
 score       dw 0                ; player's score
+move_delay  dw 2                ; movement delay in BIOS ticks (higher = slower)
 
 snake_bx    times 256 db 0      ; body segment x-coordinates
 snake_by    times 256 db 0      ; body segment y-coordinates
