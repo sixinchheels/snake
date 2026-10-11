@@ -1,6 +1,6 @@
 ; FREEZE APPLE ADDED
 ; RATE APPLE ADDED (yellow '+': eating it makes freeze apples spawn more often)
-; Slow Apple Added
+; Slow apple added (purple 'S': eating it slows movement for the rest of the round)
 
 ; ============================================================
 ; SNAKE GAME - x86 Assembly (NASM)
@@ -931,3 +931,8 @@ rate_apple_x       db 0
 rate_apple_y       db 0
 rate_apple_on      db 0                ; 1 = rate apple is on screen
 spawn_mask         db 0x1F             ; freeze apple spawn mask (smaller = more frequent)
+
+; SLOW APPLE DATA
+slow_apple_x       db 0
+slow_apple_y       db 0
+slow_apple_on      db 0                ; 1 = slow apple is on screen
